@@ -51,10 +51,14 @@ struct ContentView: View {
     
     @State private var lastAccelAngleX: Double = 0
     @State private var lastAccelAngleY: Double = 0
-
-
     
-    let refreshRate = 0.01
+    // low pass filter
+    @State private var filteredAccelAngleX: Double = 0
+    @State private var filteredAccelAngleY: Double = 0
+    
+    let smoothingAlpha = 0.2
+    
+    let refreshRate = 0.05
     let alpha = 0.99
     
     var body: some View {
@@ -336,8 +340,6 @@ struct ContentView: View {
     
     
     func startAccelerometerUpdates(forCalibration: Bool = true) {
-        guard motionManager.isAccelerometerAvailable else { return }
-        
         motionManager.accelerometerUpdateInterval = refreshRate
         motionManager.startAccelerometerUpdates(to: .main) { data, error in
             guard let data = data, error == nil else { return }
@@ -351,8 +353,6 @@ struct ContentView: View {
     }
     
     func startGyroscopeUpdates(forCalibration: Bool = true) {
-        guard motionManager.isGyroAvailable else { return }
-        
         motionManager.gyroUpdateInterval = refreshRate
         motionManager.startGyroUpdates(to: .main) { data, error in
             guard let data = data, error == nil else { return }
@@ -424,32 +424,51 @@ struct ContentView: View {
                 tiltAngleY.append(0)
                 timestamps.append(0)
             } else {
-                let lastTime = timestamps.last!
-                let currentTimestamp = -startTime.timeIntervalSinceNow
-                let dt = currentTimestamp - lastTime
-
                 let lastX = tiltAngleX.last!
                 let lastY = tiltAngleY.last!
 
                 let newX = lastX + x * dt * 180.0 / .pi
                 let newY = lastY + y * dt * 180.0 / .pi
 
-                addDataPoint(x: newX, y: newY, time: currentTimestamp)
+                addDataPoint(x: newX, y: newY, time: -startTime.timeIntervalSinceNow)
             }
         } else if measureMode == .complementary {
+            if tiltAngleX.isEmpty {
+                tiltAngleX.append(0)
+                tiltAngleY.append(0)
+                timestamps.append(0)
+            }
+
             // integrate gyro angle
             let gyroAngleDeltaX = x * dt * 180.0 / .pi
             let gyroAngleDeltaY = y * dt * 180.0 / .pi
 
-            cAngleX = alpha * (cAngleX + gyroAngleDeltaX) + (1 - alpha) * lastAccelAngleX
-            cAngleY = alpha * (cAngleY + gyroAngleDeltaY) + (1 - alpha) * lastAccelAngleY
+            if let accelData = motionManager.accelerometerData {
+                let ax = accelData.acceleration.x - accelBias.x
+                let ay = accelData.acceleration.y - accelBias.y
+                let az = accelData.acceleration.z - accelBias.z
+
+                let rawAccelAngleX = atan2(ay, sqrt(ax*ax + az*az)) * 180.0 / .pi
+                let rawAccelAngleY = atan2(-ax, sqrt(ay*ay + az*az)) * 180.0 / .pi
+
+                // apply low-pass filter to accelerometer angles
+                filteredAccelAngleX = smoothingAlpha * rawAccelAngleX + (1 - smoothingAlpha) * filteredAccelAngleX
+                filteredAccelAngleY = smoothingAlpha * rawAccelAngleY + (1 - smoothingAlpha) * filteredAccelAngleY
+
+                // complementary filter
+                cAngleX = alpha * (tiltAngleX.last! + gyroAngleDeltaX) + (1 - alpha) * filteredAccelAngleX
+                cAngleY = alpha * (tiltAngleY.last! + gyroAngleDeltaY) + (1 - alpha) * filteredAccelAngleY
+            }
 
             addDataPoint(x: cAngleX, y: cAngleY, time: -startTime.timeIntervalSinceNow)
         }
+
     }
 
     
     func addDataPoint(x: Double, y: Double, time: TimeInterval) {
+        guard timestamps.isEmpty || time - (timestamps.last ?? 0) >= refreshRate * 0.9 else { return }
+                
         tiltAngleX.append(x)
         tiltAngleY.append(y)
         timestamps.append(time)
