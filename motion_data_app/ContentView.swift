@@ -18,6 +18,10 @@ enum MeasureMode {
 struct ContentView: View {
     @State private var motionManager = CMMotionManager()
     @State private var timer: Timer?
+    @State private var updateTimer: Timer?
+    
+    @State private var timerPublisher: Publishers.Autoconnect<Timer.TimerPublisher>?
+    @State private var timerCancellable: AnyCancellable?
     
     // calibration
     @State private var accelBias = SIMD3<Double>(x: 0, y: 0, z: 0)
@@ -41,124 +45,119 @@ struct ContentView: View {
     @State private var timestamps: [Double] = []
     @State private var startTime: Date?
     
-    // complementary filter
-    @State private var cAngleX: Double = 0
-    @State private var cAngleY: Double = 0
-    @State private var lastGyroUpdateTime: Date?
+    // sensor values
+    @State private var accelAngleX: Double = 0
+    @State private var accelAngleY: Double = 0
     
+    @State private var gyroAngleX: Double = 0
+    @State private var gyroAngleY: Double = 0
+    
+    @State private var compAngleX: Double = 0
+    @State private var compAngleY: Double = 0
+    
+    @State private var currentTilt: Double = 0
     
     @State private var selectedAngleType = "X"
     
-    @State private var lastAccelAngleX: Double = 0
-    @State private var lastAccelAngleY: Double = 0
-    
-    // low pass filter
-    @State private var filteredAccelAngleX: Double = 0
-    @State private var filteredAccelAngleY: Double = 0
-    
-    let smoothingAlpha = 0.2
-    
-    let refreshRate = 0.05
+    let refreshRate = 0.02
     let alpha = 0.99
     
     var body: some View {
         VStack(spacing: 20) {
             GroupBox(label: Text("Sensor Calibration")
                 .font(.headline)) {
-                VStack(alignment: .leading, spacing: 10) {
-                    if isCalibrating {
-                        Text("Calibrating \(calibrationType): \(samplesCollected)/\(totalSamples) samples")
-                    } else {
-                        
-                        Button("Calibrate Accelerometer") {
-                            startCalibration(type: "accelerometer")
+                    VStack(alignment: .leading, spacing: 10) {
+                        if isCalibrating {
+                            Text("Calibrating \(calibrationType): \(samplesCollected)/\(totalSamples) samples")
+                        } else {
+                            
+                            Button("Calibrate Accelerometer") {
+                                startCalibration(type: "accelerometer")
+                            }
+                            .buttonStyle(.borderedProminent)
+                            .frame(maxWidth: .infinity)
+                            
+                            Group {
+                                Text("Accelerometer Bias: \(formatVector(accelBias))")
+                                Text("Accelerometer Noise: \(formatVector(accelNoise))")
+                            }
+                            .font(.system(.body, design: .monospaced))
+                            
+                            Button("Calibrate Gyroscope") {
+                                startCalibration(type: "gyroscope")
+                            }
+                            .buttonStyle(.borderedProminent)
+                            .frame(maxWidth: .infinity)
+                            
+                            Group {
+                                Text("Gyroscope Bias: \(formatVector(gyroBias))")
+                                Text("Gyroscope Noise: \(formatVector(gyroNoise))")
+                            }
+                            .font(.system(.body, design: .monospaced))
                         }
-                        .buttonStyle(.borderedProminent)
-                        .frame(maxWidth: .infinity)
-                        
-                        Group {
-                            Text("Accelerometer Bias: \(formatVector(accelBias))")
-                            Text("Accelerometer Noise: \(formatVector(accelNoise))")
-                        }
-                        .font(.system(.body, design: .monospaced))
-                        
-                        Button("Calibrate Gyroscope") {
-                            startCalibration(type: "gyroscope")
-                        }
-                        .buttonStyle(.borderedProminent)
-                        .frame(maxWidth: .infinity)
-                        
-                        Group {
-                            Text("Gyroscope Bias: \(formatVector(gyroBias))")
-                            Text("Gyroscope Noise: \(formatVector(gyroNoise))")
-                        }
-                        .font(.system(.body, design: .monospaced))
                     }
+                    .padding()
                 }
-                .padding()
-            }
-            .padding(.horizontal)
+                .padding(.horizontal)
             
             GroupBox(label: Text("Motion Tracking")
                 .font(.headline)) {
-                VStack(alignment: .leading, spacing: 10) {
-                    if isTracking {
-                        HStack {
-                            Text("Mode: ")
-                            switch measureMode {
-                            case .accelerometer:
-                                Text("Accelerometer")
-                            case .gyroscope:
-                                Text("Gyroscope")
-                            case .complementary:
-                                Text("Complementary")
+                    if measureMode == .complementary {Text("Tilt Magnitude: \(String(format: "%.2f°", currentTilt))").font(.headline).foregroundColor(.blue)
+                 }
+                    VStack(alignment: .leading, spacing: 10) {
+                        if isTracking {
+                            HStack {
+                                Text("Mode: ")
+                                switch measureMode {
+                                case .accelerometer:
+                                    Text("Accelerometer")
+                                case .gyroscope:
+                                    Text("Gyroscope")
+                                case .complementary:
+                                    Text("Complementary")
+                                }
+                                
+                                Spacer()
                             }
                             
-                            Spacer()
-                        }
-                        
-                        chartView
-                            .frame(height: 250)
-                            .padding(.vertical)
-                        
-                        HStack {
-                            Picker("Angle", selection: $selectedAngleType) {
-                                Text("Pitch").tag("X")
-                                Text("Roll").tag("Y")
+                            chartView
+                                .frame(height: 250)
+                                .padding(.vertical)
+                            
+                            HStack {
+                                Picker("Angle", selection: $selectedAngleType) {
+                                    Text("Pitch").tag("X")
+                                    Text("Roll").tag("Y")
+                                }
+                                .pickerStyle(.segmented)
+                                
+                                Spacer()
+                                
+                                Button("Exit") {
+                                    stopTracking()
+                                }
+                                .buttonStyle(.borderedProminent)
+                                .tint(.red)
+                            }
+                        } else {
+                            Picker("Tracking Mode", selection: $measureMode) {
+                                Text("Accelerometer").tag(MeasureMode.accelerometer)
+                                Text("Gyroscope").tag(MeasureMode.gyroscope)
+                                Text("Complementary").tag(MeasureMode.complementary)
                             }
                             .pickerStyle(.segmented)
+                            .padding(.vertical)
                             
-                            Spacer()
-                            
-                            Button("Exit") {
-                                stopTracking()
+                            Button("Start Tracking") {
+                                startTracking()
                             }
                             .buttonStyle(.borderedProminent)
-                            .tint(.red)
+                            .frame(maxWidth: .infinity)
                         }
-                    } else {
-                        Text("Select a mode")
-                            .font(.subheadline)
-                            .foregroundColor(.secondary)
-                        
-                        Picker("Tracking Mode", selection: $measureMode) {
-                            Text("Accelerometer").tag(MeasureMode.accelerometer)
-                            Text("Gyroscope").tag(MeasureMode.gyroscope)
-                            Text("Complementary").tag(MeasureMode.complementary)
-                        }
-                        .pickerStyle(.segmented)
-                        .padding(.vertical)
-                        
-                        Button("Start Tracking") {
-                            startTracking()
-                        }
-                        .buttonStyle(.borderedProminent)
-                        .frame(maxWidth: .infinity)
                     }
+                    .padding()
                 }
-                .padding()
-            }
-            .padding(.horizontal)
+                .padding(.horizontal)
             
             Spacer()
         }
@@ -303,65 +302,123 @@ struct ContentView: View {
     
     
     func startTracking() {
-        guard !isTracking else { return }
-        
         tiltAngleX.removeAll()
         tiltAngleY.removeAll()
         timestamps.removeAll()
-        cAngleX = 0
-        cAngleY = 0
+        
+        gyroAngleX = 0
+        gyroAngleY = 0
+        compAngleX = 0
+        compAngleY = 0
         
         startTime = Date()
-        lastGyroUpdateTime = startTime
         isTracking = true
         
-        switch measureMode {
-        case .accelerometer:
-            startAccelerometerUpdates(forCalibration: false)
-        case .gyroscope:
-            startGyroscopeUpdates(forCalibration: false)
-        case .complementary:
-            startAccelerometerUpdates(forCalibration: false)
-            startGyroscopeUpdates(forCalibration: false)
+        motionManager.accelerometerUpdateInterval = refreshRate
+        motionManager.gyroUpdateInterval = refreshRate
+        
+        motionManager.startAccelerometerUpdates()
+        motionManager.startGyroUpdates()
+        
+        timerPublisher = Timer.publish(every: refreshRate, on: .main, in: .common).autoconnect()
+        timerCancellable = timerPublisher?.sink { _ in
+            self.processMotionData()
         }
         
+        // stop after 60 seconds
         timer = Timer.scheduledTimer(withTimeInterval: 60, repeats: false) { _ in
             stopTracking()
         }
+    }
+    
+    func processMotionData() {
+        guard let startTime = startTime, isTracking else { return }
         
+        if let accelData = motionManager.accelerometerData,
+           let gyroData = motionManager.gyroData {
+            
+            let elapsedTime = -startTime.timeIntervalSinceNow
+            
+            // accelerometer data
+            let ax = accelData.acceleration.x - accelBias.x
+            let ay = accelData.acceleration.y - accelBias.y
+            let az = accelData.acceleration.z - accelBias.z
+            
+            accelAngleX = atan2(ay, sqrt(ax*ax + az*az)) * 180.0 / .pi
+            accelAngleY = atan2(-ax, sqrt(ay*ay + az*az)) * 180.0 / .pi
+            
+            // gyro data, flip!
+            let gx = -(gyroData.rotationRate.x - gyroBias.x)
+            let gy = -(gyroData.rotationRate.y - gyroBias.y)
+            
+            gyroAngleX += gx * refreshRate * 180.0 / .pi
+            gyroAngleY += gy * refreshRate * 180.0 / .pi
+            
+            // complementary filter
+            compAngleX = alpha * (compAngleX + gx * refreshRate * 180.0 / .pi) + (1.0 - alpha) * accelAngleX
+            compAngleY = alpha * (compAngleY + gy * refreshRate * 180.0 / .pi) + (1.0 - alpha) * accelAngleY
+            
+            // tilt
+            if measureMode == .complementary {
+                currentTilt = sqrt(pow(compAngleX, 2) + pow(compAngleY, 2))
+            }
+            
+            var angleX: Double
+            var angleY: Double
+            
+            switch measureMode {
+            case .accelerometer:
+                angleX = accelAngleX
+                angleY = accelAngleY
+            case .gyroscope:
+                angleX = gyroAngleX
+                angleY = gyroAngleY
+            case .complementary:
+                angleX = compAngleX
+                angleY = compAngleY
+            }
+            
+            addDataPoint(x: angleX, y: angleY, time: elapsedTime)
+        }
     }
     
     func stopTracking() {
+        currentTilt = 0.0
+        
+        timerCancellable?.cancel()
+        timerCancellable = nil
+        timerPublisher = nil
+        
         timer?.invalidate()
         timer = nil
+        
         stopMotionUpdates()
         isTracking = false
     }
     
-    
     func startAccelerometerUpdates(forCalibration: Bool = true) {
         motionManager.accelerometerUpdateInterval = refreshRate
-        motionManager.startAccelerometerUpdates(to: .main) { data, error in
-            guard let data = data, error == nil else { return }
-            
-            if forCalibration {
-                handleAccelerometerCalibrationData(data)
-            } else if isTracking {
-                handleAccelerometerTrackingData(data)
+        
+        if forCalibration {
+            motionManager.startAccelerometerUpdates(to: .main) { data, error in
+                guard let data = data, error == nil else { return }
+                self.handleAccelCalibration(data)
             }
+        } else {
+            motionManager.startAccelerometerUpdates()
         }
     }
     
     func startGyroscopeUpdates(forCalibration: Bool = true) {
         motionManager.gyroUpdateInterval = refreshRate
-        motionManager.startGyroUpdates(to: .main) { data, error in
-            guard let data = data, error == nil else { return }
-            
-            if forCalibration {
-                handleGyroscopeCalibrationData(data)
-            } else if isTracking {
-                handleGyroscopeTrackingData(data)
+        
+        if forCalibration {
+            motionManager.startGyroUpdates(to: .main) { data, error in
+                guard let data = data, error == nil else { return }
+                self.handleGyroCalibration(data)
             }
+        } else {
+            motionManager.startGyroUpdates()
         }
     }
     
@@ -370,105 +427,19 @@ struct ContentView: View {
         motionManager.stopGyroUpdates()
     }
     
-    
-    func handleAccelerometerCalibrationData(_ data: CMAccelerometerData) {
+    func handleAccelCalibration(_ data: CMAccelerometerData) {
         let sample = SIMD3<Double>(x: data.acceleration.x, y: data.acceleration.y, z: data.acceleration.z)
         accelSamples.append(sample)
         samplesCollected = accelSamples.count
     }
     
-    func handleGyroscopeCalibrationData(_ data: CMGyroData) {
+    func handleGyroCalibration(_ data: CMGyroData) {
         let sample = SIMD3<Double>(x: data.rotationRate.x, y: data.rotationRate.y, z: data.rotationRate.z)
         gyroSamples.append(sample)
         samplesCollected = gyroSamples.count
     }
     
-    func handleAccelerometerTrackingData(_ data: CMAccelerometerData) {
-        guard let startTime = startTime, isTracking else { return }
-
-        let x = data.acceleration.x - accelBias.x
-        let y = data.acceleration.y - accelBias.y
-        let z = data.acceleration.z - accelBias.z
-
-        let accelAngleX = atan2(y, sqrt(x*x + z*z)) * 180.0 / .pi
-        let accelAngleY = atan2(-x, sqrt(y*y + z*z)) * 180.0 / .pi
-
-        lastAccelAngleX = accelAngleX
-        lastAccelAngleY = accelAngleY
-
-        if measureMode == .accelerometer {
-            addDataPoint(x: accelAngleX, y: accelAngleY, time: -startTime.timeIntervalSinceNow)
-        }
-    }
-
-
-    func handleGyroscopeTrackingData(_ data: CMGyroData) {
-        guard let startTime = startTime, isTracking else { return }
-
-        let x = data.rotationRate.x - gyroBias.x
-        let y = data.rotationRate.y - gyroBias.y
-
-        let currentTime = Date()
-
-        guard let lastUpdateTime = lastGyroUpdateTime else {
-            lastGyroUpdateTime = currentTime
-            return
-        }
-
-        let dt = currentTime.timeIntervalSince(lastUpdateTime)
-        lastGyroUpdateTime = currentTime
-
-        if measureMode == .gyroscope {
-            if tiltAngleX.isEmpty {
-                tiltAngleX.append(0)
-                tiltAngleY.append(0)
-                timestamps.append(0)
-            } else {
-                let lastX = tiltAngleX.last!
-                let lastY = tiltAngleY.last!
-
-                let newX = lastX + x * dt * 180.0 / .pi
-                let newY = lastY + y * dt * 180.0 / .pi
-
-                addDataPoint(x: newX, y: newY, time: -startTime.timeIntervalSinceNow)
-            }
-        } else if measureMode == .complementary {
-            if tiltAngleX.isEmpty {
-                tiltAngleX.append(0)
-                tiltAngleY.append(0)
-                timestamps.append(0)
-            }
-
-            // integrate gyro angle
-            let gyroAngleDeltaX = x * dt * 180.0 / .pi
-            let gyroAngleDeltaY = y * dt * 180.0 / .pi
-
-            if let accelData = motionManager.accelerometerData {
-                let ax = accelData.acceleration.x - accelBias.x
-                let ay = accelData.acceleration.y - accelBias.y
-                let az = accelData.acceleration.z - accelBias.z
-
-                let rawAccelAngleX = atan2(ay, sqrt(ax*ax + az*az)) * 180.0 / .pi
-                let rawAccelAngleY = atan2(-ax, sqrt(ay*ay + az*az)) * 180.0 / .pi
-
-                // apply low-pass filter to accelerometer angles
-                filteredAccelAngleX = smoothingAlpha * rawAccelAngleX + (1 - smoothingAlpha) * filteredAccelAngleX
-                filteredAccelAngleY = smoothingAlpha * rawAccelAngleY + (1 - smoothingAlpha) * filteredAccelAngleY
-
-                // complementary filter
-                cAngleX = alpha * (tiltAngleX.last! + gyroAngleDeltaX) + (1 - alpha) * filteredAccelAngleX
-                cAngleY = alpha * (tiltAngleY.last! + gyroAngleDeltaY) + (1 - alpha) * filteredAccelAngleY
-            }
-
-            addDataPoint(x: cAngleX, y: cAngleY, time: -startTime.timeIntervalSinceNow)
-        }
-
-    }
-
-    
     func addDataPoint(x: Double, y: Double, time: TimeInterval) {
-        guard timestamps.isEmpty || time - (timestamps.last ?? 0) >= refreshRate * 0.9 else { return }
-                
         tiltAngleX.append(x)
         tiltAngleY.append(y)
         timestamps.append(time)
