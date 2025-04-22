@@ -8,6 +8,7 @@
 import SwiftUI
 import CoreMotion
 import Charts
+import Combine
 
 enum MeasureMode {
     case accelerometer
